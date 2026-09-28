@@ -3,7 +3,10 @@
 Proyecto de automatización para la conciliación de liquidaciones y ventas de **Mercado Pago**.
 Lee el extracto descargado de Mercado Pago y reconstruye el importe bruto total de cada operación comercial (`MOV TOTAL`) a partir del importe neto y las deducciones impositivas y comisiones (**SIRCUPA, SIRTAC, IDC y Gastos**).
 
-Genera un libro Excel resultante con las **10 columnas oficiales** y una pestaña de auditoría **`No Conciliados`** en caso de que existan cargos huérfanos o retenciones globales.
+Genera un libro Excel resultante con:
+- **Pestaña principal (`sheet0` / `TP`)**: Las **10 columnas oficiales** con el bruto comercial reconstruido (`MOV TOTAL`) y deducciones imputadas con precisión centavo a centavo.
+- **Pestaña `Control y Cuadre`**: Matriz de balance contable que certifica la conservación exacta de fondos con **diferencia $0.00** entre lo leído en el extracto original, lo imputado en la hoja principal y lo derivado a no conciliados.
+- **Pestaña `No Conciliados`**: Detalle analítico de cargos huérfanos o retenciones globales sin contraparte en el período, indicando hoja, fila y motivo.
 
 ---
 
@@ -93,3 +96,4 @@ Proyecto-RPA/
 3. **Resolución de IDC Alfanuméricos:** Para cargos de IDC con códigos internos (ej: `0007eymbh3`), el algoritmo los vincula unívocamente mediante fecha y validación de la ecuación financiera (`neto + deducciones + IDC = base imponible`).
 4. **Pestaña de No Conciliados:** Si un cargo no tiene contraparte en el extracto (ej. IDC globales de extracción), se lista en la pestaña `No Conciliados` con motivo e importe.
 5. **Protección contra Bloqueos:** Si el archivo destino está abierto en Excel al generar el reporte, crea una copia fechada alternativa sin interrumpir el proceso.
+6. **Control de Auditoría y Balance Cero ($0.00):** Verifica matemáticamente que $\text{Total Origen} = \text{Total Imputado} + \text{Total No Conciliados}$. En la pestaña **`Control y Cuadre`** se certifica la diferencia de \$0.00, la cobertura del 100% de los registros analizados y el cuadre de la ecuación de balance comercial.

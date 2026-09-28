@@ -106,12 +106,14 @@ async def conciliar_archivo(
         # 4. Generar Excel final
         nombre_descarga = f"conciliacion_{periodo_seleccionado}.xlsx"
         generar_excel(
-            archivo_entrada,
-            archivo_salida,
-            resultados,
-            hoja,
-            cargos_pendientes,
-            movimientos
+            archivo_origen=archivo_entrada,
+            archivo_destino=archivo_salida,
+            resultados=resultados,
+            hoja_tp=hoja,
+            cargos_pendientes=cargos_pendientes,
+            movimientos=movimientos,
+            todos_los_cargos=cargos,
+            periodo=periodo_seleccionado
         )
 
         # Guardar en caché de descarga

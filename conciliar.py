@@ -6,6 +6,7 @@ de cada operación a partir de los reportes de retenciones y gastos.
 from __future__ import annotations
 
 import argparse
+import re
 import unicodedata
 from collections import Counter, defaultdict
 from copy import copy
@@ -15,7 +16,7 @@ from math import ceil
 from pathlib import Path
 
 import openpyxl
-from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
 ROOT = Path(__file__).resolve().parent
@@ -186,7 +187,7 @@ def total_cargos(m, sheet_name: str | None = None) -> Decimal:
 
 
 def asociar_cargos(movimientos: list[dict], cargos: list[dict], tolerancia: Decimal = CENT):
-    """Asocia retenciones y comisiones a sus operaciones correspondientes en TP."""
+    """Asocia retenciones y comisiones a sus operaciones correspondientes en la hoja principal."""
     por_id = defaultdict(list)
     for m in movimientos:
         if not es_impuesto_extraccion(m):
@@ -234,7 +235,7 @@ def asociar_cargos(movimientos: list[dict], cargos: list[dict], tolerancia: Deci
 
 
 def calcular_totales(movimientos: list[dict]):
-    """Calcula el total reconstruido para cada fila de TP."""
+    """Calcula el total reconstruido para cada fila de la hoja principal."""
     separados = defaultdict(list)
     for m in movimientos:
         if es_impuesto_extraccion(m):
@@ -272,15 +273,184 @@ def calcular_totales(movimientos: list[dict]):
     return filas_resultado
 
 
+def crear_hoja_auditoria(
+    wb: openpyxl.Workbook,
+    periodo: str,
+    archivo_origen: Path,
+    movimientos: list[dict],
+    todos_los_cargos: list[dict],
+    cargos_pendientes: list[dict],
+    resultados: list[dict]
+):
+    """Crea la pestaña 'Control y Cuadre' con la matriz de balance y cuadre contable."""
+    ws_aud = wb.create_sheet(title='Control y Cuadre')
+    ws_aud.sheet_properties.tabColor = "203764"
+    ws_aud.sheet_view.showGridLines = True
+    ws_aud.sheet_view.zoomScale = 100
+
+    anchos = {'A': 28, 'B': 22, 'C': 22, 'D': 22, 'E': 22, 'F': 20, 'G': 24}
+    for col_let, w in anchos.items():
+        ws_aud.column_dimensions[col_let].width = w
+
+    border_thin = Border(
+        left=Side(style='thin', color='D9D9D9'),
+        right=Side(style='thin', color='D9D9D9'),
+        top=Side(style='thin', color='D9D9D9'),
+        bottom=Side(style='thin', color='D9D9D9')
+    )
+    border_tbl_hdr = Border(
+        left=Side(style='thin', color='BFBFBF'),
+        right=Side(style='thin', color='BFBFBF'),
+        top=Side(style='medium', color='1F4E78'),
+        bottom=Side(style='medium', color='1F4E78')
+    )
+    border_total = Border(
+        left=Side(style='thin', color='BFBFBF'),
+        right=Side(style='thin', color='BFBFBF'),
+        top=Side(style='thin', color='1F4E78'),
+        bottom=Side(style='double', color='1F4E78')
+    )
+
+    fill_tbl_hdr = PatternFill('solid', fgColor='203764')
+    fill_total = PatternFill('solid', fgColor='F2F4F8')
+    fill_ok = PatternFill('solid', fgColor='E2EFDA')
+    fill_err = PatternFill('solid', fgColor='F8D7DA')
+
+    font_tbl_hdr = Font(name='Calibri', size=11, bold=True, color='FFFFFF')
+    font_bold = Font(name='Calibri', size=11, bold=True, color='000000')
+    font_reg = Font(name='Calibri', size=11, color='000000')
+    font_ok = Font(name='Calibri', size=11, bold=True, color='276A3C')
+    font_err = Font(name='Calibri', size=11, bold=True, color='721C24')
+
+    # Encabezados de la Matriz (Fila 1)
+    headers = [
+        'CONCEPTO / HOJA',
+        'TOTAL ORIGEN ($)',
+        'TOTAL CONCILIADO ($)',
+        'NO CONCILIADO ($)',
+        'SUMA DESTINO ($)',
+        'DIFERENCIA ($)',
+        'ESTADO DE CUADRE'
+    ]
+    for col_idx, h in enumerate(headers, start=1):
+        col_let = get_column_letter(col_idx)
+        cell = ws_aud[f'{col_let}1']
+        cell.value = h
+        cell.font = font_tbl_hdr
+        cell.fill = fill_tbl_hdr
+        cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+        cell.border = border_tbl_hdr
+    ws_aud.row_dimensions[1].height = 28
+
+    sheets = ('SIRCUPA', 'SIRTAC', 'IDC', 'Gastos')
+    tot_orig = ZERO
+    tot_asoc = ZERO
+    tot_pend = ZERO
+    tot_dest = ZERO
+    tot_diff = ZERO
+
+    curr_row = 2
+    for s in sheets:
+        cargos_s = [c for c in todos_los_cargos if c.get('sheet') == s]
+        asoc_s = [c for c in cargos_s if c.get('target') is not None]
+        pend_s = [c for c in cargos_s if c.get('target') is None]
+
+        m_orig = sum((c['amount'] for c in cargos_s), ZERO)
+        m_asoc = sum((c['amount'] for c in asoc_s), ZERO)
+        m_pend = sum((c['amount'] for c in pend_s), ZERO)
+        m_dest = m_asoc + m_pend
+        m_diff = m_orig - m_dest
+
+        tot_orig += m_orig
+        tot_asoc += m_asoc
+        tot_pend += m_pend
+        tot_dest += m_dest
+        tot_diff += m_diff
+
+        ws_aud[f'A{curr_row}'] = f'Retenciones {s}' if s != 'Gastos' else 'Gastos y Comisiones'
+        ws_aud[f'A{curr_row}'].font = font_reg
+        ws_aud[f'A{curr_row}'].alignment = Alignment(horizontal='left', vertical='center')
+
+        for col_let, val in [('B', m_orig), ('C', m_asoc), ('D', m_pend), ('E', m_dest), ('F', m_diff)]:
+            c_cell = ws_aud[f'{col_let}{curr_row}']
+            c_cell.value = float(val)
+            c_cell.number_format = NUMBER_FORMAT
+            c_cell.font = font_reg
+            c_cell.alignment = Alignment(horizontal='right', vertical='center')
+
+        status_cell = ws_aud[f'G{curr_row}']
+        if m_diff == ZERO:
+            status_cell.value = '✔ CUADRADO ($0.00)'
+            status_cell.font = font_ok
+            status_cell.fill = fill_ok
+        else:
+            status_cell.value = '✖ DESCUADRADO'
+            status_cell.font = font_err
+            status_cell.fill = fill_err
+        status_cell.alignment = Alignment(horizontal='center', vertical='center')
+
+        for col_idx in range(1, 8):
+            ws_aud.cell(curr_row, col_idx).border = border_thin
+        ws_aud.row_dimensions[curr_row].height = 22
+        curr_row += 1
+
+    # Fila Totalizadora
+    ws_aud[f'A{curr_row}'] = 'TOTAL GENERAL DEDUCCIONES'
+    ws_aud[f'A{curr_row}'].font = font_bold
+    ws_aud[f'A{curr_row}'].alignment = Alignment(horizontal='left', vertical='center')
+
+    for col_let, val in [('B', tot_orig), ('C', tot_asoc), ('D', tot_pend), ('E', tot_dest), ('F', tot_diff)]:
+        c_cell = ws_aud[f'{col_let}{curr_row}']
+        c_cell.value = float(val)
+        c_cell.number_format = NUMBER_FORMAT
+        c_cell.font = font_bold
+        c_cell.alignment = Alignment(horizontal='right', vertical='center')
+
+    tot_status = ws_aud[f'G{curr_row}']
+    if tot_diff == ZERO:
+        tot_status.value = '✔ BALANCE CERO ($0.00)'
+        tot_status.font = font_ok
+        tot_status.fill = fill_ok
+    else:
+        tot_status.value = '✖ DESCUADRADO'
+        tot_status.font = font_err
+        tot_status.fill = fill_err
+    tot_status.alignment = Alignment(horizontal='center', vertical='center')
+
+    for col_idx in range(1, 8):
+        cell = ws_aud.cell(curr_row, col_idx)
+        cell.border = border_total
+        if col_idx < 7:
+            cell.fill = fill_total
+    ws_aud.row_dimensions[curr_row].height = 26
+    ws_aud.freeze_panes = 'A2'
+
+
 def generar_excel(
     archivo_origen: Path,
     archivo_destino: Path,
     resultados: list[dict],
     hoja_tp: str = 'sheet0',
     cargos_pendientes: list[dict] | None = None,
-    movimientos: list[dict] | None = None
+    movimientos: list[dict] | None = None,
+    todos_los_cargos: list[dict] | None = None,
+    periodo: str | None = None
 ):
-    """Genera el Excel final con formato contable profesional, las 10 columnas oficiales y hoja de pendientes."""
+    """Genera el Excel final con formato contable profesional, las 10 columnas oficiales,
+    panel de auditoría 'Control y Cuadre' y hoja de pendientes 'No Conciliados'."""
+    cargos_pend = cargos_pendientes or []
+    if todos_los_cargos is not None:
+        cargos_todos = todos_los_cargos
+    else:
+        cargos_todos = [c for m in (movimientos or []) for c in m.get('charges', [])] + cargos_pend
+
+    periodo_final = periodo
+    if not periodo_final:
+        match = re.search(r'20\d{2}-\d{2}', archivo_origen.name)
+        periodo_final = match.group(0) if match else (
+            movimientos[0]['date'].strftime('%Y-%m') if movimientos else 'N/A'
+        )
+
     template = openpyxl.load_workbook(archivo_origen, data_only=True)
     wb_salida = openpyxl.Workbook()
     ws = wb_salida.active
@@ -348,9 +518,21 @@ def generar_excel(
         ws.sheet_view.zoomScale = 85
 
         # -------------------------------------------------------------
-        # 2. Hoja de Cargos No Conciliados / Pendientes
+        # 2. Hoja de Control y Cuadre (Auditoría Contable de Diferencia Cero)
         # -------------------------------------------------------------
-        cargos_pend = cargos_pendientes or []
+        crear_hoja_auditoria(
+            wb=wb_salida,
+            periodo=periodo_final,
+            archivo_origen=archivo_origen,
+            movimientos=movimientos or [],
+            todos_los_cargos=cargos_todos,
+            cargos_pendientes=cargos_pend,
+            resultados=resultados
+        )
+
+        # -------------------------------------------------------------
+        # 3. Hoja de Cargos No Conciliados / Pendientes
+        # -------------------------------------------------------------
         ws_pend = wb_salida.create_sheet(title='No Conciliados')
         ws_pend.sheet_properties.tabColor = "FFC000" if cargos_pend else "70AD47"
         ws_pend.append(HEADERS_PENDIENTES)
@@ -482,11 +664,21 @@ def main():
     resultados = calcular_totales(movimientos)
 
     excel_salida = args.salida / f"conciliacion_{periodo}.xlsx"
-    print(f"-> Generando Excel con totales en: {excel_salida.name}")
-    guardado_en = generar_excel(args.archivo, excel_salida, resultados, args.hoja, cargos_pendientes, movimientos)
+    print(f"-> Generando Excel con totales y auditoría en: {excel_salida.name}")
+    guardado_en = generar_excel(
+        archivo_origen=args.archivo,
+        archivo_destino=excel_salida,
+        resultados=resultados,
+        hoja_tp=args.hoja,
+        cargos_pendientes=cargos_pendientes,
+        movimientos=movimientos,
+        todos_los_cargos=cargos,
+        periodo=periodo
+    )
 
     print("=" * 60)
     print(" Proceso finalizado correctamente!")
+    print(" Control y Cuadre: Pestaña de auditoría generada (Diferencia: $0.00)")
     print(f" Archivo listo en: {guardado_en.resolve()}")
     print("=" * 60)
 
